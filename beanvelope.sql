@@ -6,13 +6,14 @@ create table budgets
 	year integer,
 	month integer,
 	active boolean default 0,
-	closed boolean default 0
+	closed boolean default 0,
+	unique (year,month)
 );
 
 -- accounts table
 create table accounts
 	(account_id integer primary key,
-	account_name text,
+	account_name text unique,
 	closed boolean default 0
 );
 
