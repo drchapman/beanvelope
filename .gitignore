@@ -1,4 +1,6 @@
 venv/
 *.db
+*.bak
 __*
 .*swp
+*.tmp
