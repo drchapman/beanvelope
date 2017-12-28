@@ -19,7 +19,7 @@ create table accounts
 
 -- income table
 create table income
-	(budget_id integer,
+	(budget_id integer primary key,
 	income number,
 	foreign key(budget_id) references budgets(budget_id)
 );
@@ -31,6 +31,7 @@ create table budget_base
 	base_value number default 0.00,
 	target number default 0.00,
 	spending number default 0.00,
+	constraint base_idx primary key (budget_id, account_id),
 	foreign key(budget_id) references budgets(budget_id),
 	foreign key(account_id) references accounts(account_id)
 );

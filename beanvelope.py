@@ -5,6 +5,8 @@ import os
 import datetime
 import argparse
 import subprocess
+from tabulate import tabulate
+from termcolor import colored
 
 class position:
     def __init__(self, line):
@@ -18,27 +20,48 @@ class position:
         return(self.value)
 
 class budget:
-    def __init__(self, db, beanfile, month=None, year=None):
+    def __init__(self, db, beanfile, month=None, year=None,init=False):
         self.beanfile = beanfile
         today = datetime.date.today()
         if month == None:
             self.month = today.month
         else:
-            self.month = month
+            self.month = int(month)
         if year == None:
             self.year = today.year
         else:
-            self.year = year
+            self.year = int(year)
+        if self.month == 12:
+            self.next_month = 1
+            self.next_year = self.year + 1
+            self.last_month = 11
+            self.last_year = self.year
+        elif self.month == 1:
+            self.next_month = 2
+            self.next_year = self.year
+            self.last_month = 12
+            self.last_year = self.year - 1
+        else:
+            self.next_month = int(self.month) + 1
+            self.next_year = self.year
+            self.last_month = int(self.month) - 1
+            self.last_year = self.year 
+        #print("This month:", self.month)
+        #print("Last month:", self.last_month)
+        #print("Next month:", self.next_month)
         self.connect(db)
         self.bq = "bean-query"
         self.tempfile = 'beanvelope.tmp'
-        self.get_budget_id()
-        self.return_codes = {
-                1: "income_inserted",
-                2: "income_update",
-                3: "income_change_fail",
-                4: "get_account_id_fail"
-                }
+        if init:
+            self.open_budget()
+        else:
+            self.get_budget_id()
+            self.check_budget_status()
+            self.get_bean_income()
+            self.load_income()
+            self.get_income()
+            self.get_bean_accounts()
+            self.load_accounts()
 
 
     def connect(self,db):
@@ -65,39 +88,58 @@ class budget:
 
     
     def get_bean_accounts(self):
-        query = "balances where account ~ 'Expenses' or (account ~ 'Liabilities' and not 'Expenses:Interest' in other_accounts) and month = {} and year = {}".format(self.month, self.year)
+        '''Create a tempfile containing the current list of accounts from beancount'''
+        #query = "balances from month = {} and year = {} where account ~ 'Expenses' or (account ~ 'Liabilities' and not 'Expenses:Interest' in other_accounts) order by account".format(self.month, self.year)
+        query = "select account,sum(position) from month = {} and year = {} where account ~ 'Expenses' or (account ~ 'Liabilities' and not 'Expenses:Interest' in other_accounts) group by account order by account".format(self.month, self.year)
+        #print(query)
+        #exit()
         self.run_beancount(query)
 
     def get_bean_income(self):
-        query = "select 'Income',sum(position) where month = {} and year = {} and account ~ 'Income' and not 'Exclude' in tags group by 'Income'".format(self.month, self.year)
+        '''Create a tempfile containing the available income from beancount'''
+        query = "select 'Income',sum(position) from month = {} and year = {}  where account ~ 'Income' and not 'Exclude' in tags group by 'Income'".format(self.last_month, self.last_year)
+        #print(query)
+        #exit()
         self.run_beancount(query)
 
-    #TODO Use this for all insert, updates or deletes
-    def write_sql(self, sql, params, get_id=False):
-        try:
-            if len(params) > 1:
-                go = self.curs.executemany(sql, params)
-            else:
+    def write_sql(self, sql, params, get_id=False,single=True,debug=False):
+        if debug:
+            if single == True:
                 go = self.curs.execute(sql, params)
-        except sqlite3.IntegrityError:
-            return("constraint_violation")
-        except:
-            return("sql_failure")
-        else:
-            self.dbobject.commit()
-            if get_id == True:
-                return(self.curs.lastrowid)
             else:
-                return(0)
+                go = self.curs.executemany(sql, params)
+        else:
+            try:
+                if single == True:
+                    go = self.curs.execute(sql, params)
+                else:
+                    go = self.curs.executemany(sql, params)
+            except sqlite3.IntegrityError:
+                return("constraint_violation")
+            except:
+                return("sql_failure")
+            else:
+                self.dbobject.commit()
+                if get_id == True:
+                    return(self.curs.lastrowid)
+                else:
+                    return(0)
 
-    def read_sql(self, sql, params, single=False):
+    def read_sql(self, sql, params, single=False,debug=False):
+        if debug == True:
+            go = self.curs.execute(sql, params)
+            if single == False:
+                result = go.fetchall()
+            else:
+                result = go.fetchone()
+            return(result)
         try:
             go = self.curs.execute(sql, params)
         except:
             return("sql_failure")
         else:
             if single == False:
-                result = go.fetch()
+                result = go.fetchall()
             else:
                 result = go.fetchone()
             return(result)
@@ -106,87 +148,87 @@ class budget:
 
 
     def insert_accounts(self):
+        '''Insert new accounts into the database, as needed'''
         accounts = self.read_temp()
         for row in accounts:
             entry = position(row)
             sql = '''insert into accounts (account_name) values (?)'''
-            try:
-                go = self.curs.execute(sql, [str(entry.get_account())])
-            except sqlite3.IntegrityError:
+            results = self.write_sql(sql, [str(entry.get_account())], get_id=True)
+            if results == "constraint_violation":
                 pass
+            elif results == "sql_failure":
+                exit(1)
             else:
-                self.dbobject.commit()
-                self.account_id = self.curs.lastrowid
-                print("Added:",entry.get_account(), "ID:",self.account_id)
+                sql = '''insert into corrections values (?,?,?,?)'''
+                corr = self.write_sql(sql, [self.budget_id,results,'C',0])
+        #        return(0)
 
     def load_income(self):
         income = self.read_temp()
         entry = position(income[0])
         sql = '''insert into income values (?, ?)'''
-        try:
-            go = self.curs.execute(sql, [str(self.budget_id), str(entry.get_value())])
-        except sqlite3.IntegrityError:
+        results = self.write_sql(sql, [self.budget_id, str(-1*int(entry.get_value()))])
+        if results == "constraint_violation":
             sql = '''update income set income = ? where budget_id = ?'''
-            try:
-                go = self.curs.execute(sql, [str(entry.get_value()),str(self.budget_id)])
-            except:
-                print("Failed")
-            else:
-                self.dbobject.commit()
-                return(1)
-        else:
-            self.dbobject.commit()
-            print("Inserted income")
+            results = self.write_sql(sql, [str(-1*int(entry.get_value())),self.budget_id])
 
     def load_accounts(self):
         accounts = self.read_temp()
         load_list = []
         for row in accounts:
             entry = position(row)
-            pair = (entry.get_value(), entry.get_account())
-            load_list.append(pair)
-        print(load_list)
+            vals = (entry.get_value(), entry.get_account(),self.budget_id)
+            load_list.append(vals)
         sql = '''update budget_base 
                  set spending = ? 
                  where account_id = (select account_id from accounts where account_name = ?)
+                 and budget_id = ?
                  '''
-        go = self.curs.executemany(sql, load_list)
-        self.dbobject.commit()
-        print("Updated income")
+        account_write = self.write_sql(sql, load_list,single=False)
+        if account_write == "sql_failure":
+            print("Failed to update")
+            exit(1)
 
 
 
     def open_budget(self):
         '''Create a new entry in the budgets table'''
         sql = '''insert into budgets (year,month) values (?, ?)'''
-        try:
-            go = self.curs.execute(sql, [str(self.year), str(self.month)])
-        except sqlite3.IntegrityError:
-            print("This already exists")
-        else:
-            self.dbobject.commit()
-            self.budget_id = self.curs.lastrowid
-            print(self.budget_id)
+        budget_id = self.write_sql(sql,[str(self.year), str(self.month)],get_id=True)
+        if budget_id == "constraint_violation":
+            print("Budget already exists")
+            return(3)
+        elif budget_id == "sql_failure":
+            print("Error encountered")
+            exit(2)
+        elif budget_id > 0:
+            self.budget_id = budget_id
+            self.get_bean_accounts()
+            self.load_accounts()
+            self.insert_accounts()
+            self.create_budget_envelopes()
 
+    def create_budget_envelopes(self):
+        sql = '''insert into budget_base 
+                select ?, account_id, 0.00, 0.00, 0.00 from accounts'''
+        results = self.write_sql(sql, [self.budget_id])
+        
+         
         
     def get_budget_id(self):
         sql = '''select budget_id from budgets where year = ? and month = ?'''
-        go = self.curs.execute(sql, [str(self.year), str(self.month)])
-        result = go.fetchone()
-        self.budget_id = result[0]
+        budget_id = self.read_sql(sql,[str(self.year),str(self.month)],single=True)
+        if budget_id == None:
+            #self.open_budget()
+            print("No budget for this month")
+            exit(1)
+        else:
+            self.budget_id = budget_id[0]
+        return(0)
 
     def get_account_id(self,name):
         sql = '''select account_id from accounts where account_name = ?'''
-        #go = self.curs.execute(sql, [name])
-        #result = go.fetchone()
-        #try:
-        #    self.account_id = result[0]
-        #except:
-        #    return(4)
-        #else:
-        #    go = self.curs.execute(sql, [name])
-        #    self.dbobject.commit()
-        result = self.read_sql(sql, [name])
+        result = self.read_sql(sql, name)
         return(result)
 
     def set_base_envelope(self,acct_id,value):
@@ -194,17 +236,401 @@ class budget:
                 set base_value = ?
                 where budget_id = ?
                 and account_id = ?'''
+        results = self.write_sql(sql, [value, self.budget_id, acct_id])
+        if results == 0:
+            return(0)
+
+    def redistribute_envelopes(self,acc1,acc2,transfer):
+        sql = '''update budget_base
+                 set base_value = base_value + ?
+                 where budget_id = ?
+                 and account_id = ?'''
+        env1 = (-transfer, self.budget_id,acc1)
+        env2 = (transfer, self.budget_id,acc2)
+        results = self.write_sql(sql, [env1,env2],single=False)
+        if results == 0:
+            return(0)
+
+    def make_correction(self,acc1,acc2,transfer):
+        sql = '''insert into corrections
+                 values (?, ?, ?, ?)'''
+        env1 = (self.budget_id,acc1,'A',-transfer)
+        env2 = (self.budget_id,acc2,'A',transfer)
+        results = self.write_sql(sql, [env1,env2],single=False)
+        if results == 0:
+            return(0)
+
+    def single_correction(self,acct_id,amount):
+        sql = '''insert into corrections
+                 values (?,?,?,?)'''
+        vals = [self.budget_id,acct_id,'S',amount]
+        results = self.write_sql(sql, vals)
+        if results == 0:
+            return(0)
+        else:
+            return(8)
+
+    def set_target(self,acct,targ_val):
+        sql = '''update budget_base
+                 set target = ?
+                 where budget_id = ?
+                 and account_id = ?'''
+        results = self.write_sql(sql,[targ_val,self.budget_id,acct])
+        if results == 0:
+            return(0)
+        else:
+            return(9)
+
+    def get_income(self):
+        '''Read income from current month's budget'''
+        sql = '''select income from income where budget_id = ?'''
+        results = self.read_sql(sql,[self.budget_id], single=True)
+        self.income = results[0]
+
+    def allocation_balance(self):
+        sql = '''select (i.income - (select sum(base_value) 
+                                     from budget_base
+                                     where budget_id = ?))
+                 from income as i
+                 where i.budget_id = ?'''
+        results = self.read_sql(sql, [self.budget_id, self.budget_id], single=True)
+        return(results[0])
+
+    def base_planner(self):
+        balance = self.allocation_balance()
+
+        header = '''Income:  {}\nBalance: {}
+
+                    '''
+        print(header.format(self.income, self.text_color(balance)))
+
+        sql = '''select a.account_id, 
+                        a.account_name, 
+                        b.target, 
+                        c.correction_value, 
+                        b.base_value
+                 from accounts a, budget_base b, corrections c
+                 where a.account_id = b.account_id
+                 and b.account_id = c.account_id
+                 and b.budget_id = c.budget_id
+                 and b.budget_id = ?
+                 and c.correction_type = ?
+                 order by account_name'''
+
+        results = self.read_sql(sql, [self.budget_id, 'C'])#,debug=True)
+        #print(results)
+        #exit()
+        if results != "sql_failure":
+            table_values = []
+            for i in results:
+                table_values.append([i[0], i[1], i[2], i[3], self.text_color(i[4])])
+            print(tabulate(table_values, ["ID", "Account", "Target", "Carried", "Allocated"], tablefmt="simple"))
+
+
+                
+
+    def envelope_balance(self,carry=True):
+        sql = '''
+                create temporary table correction_temp 
+                as select account_id, sum(correction_value) as total_correction 
+                from corrections 
+                where budget_id = ? 
+                group by (account_id);
+                '''
+        results = self.write_sql(sql, [self.budget_id])
+        sql = '''
+                select a.account_id, a.account_name, 
+                    b.base_value, c.total_correction, b.spending,
+                    (b.base_value + c.total_correction - b.spending) as envelope_balance
+                from accounts a, budget_base b, correction_temp c
+                where a.account_id = b.account_id
+                and b.account_id = c.account_id
+                and budget_id = ?
+                order by account_name
+                '''
+        results = self.read_sql(sql, [self.budget_id])
+        return(results)
+
+    def return_balances(self,html=False):
+        results = self.envelope_balance()
+        if results != "sql_failure":
+            table_values = []
+            #for i in results:
+            #    table_values.append([i[0], i[1], self.text_color(i[5])])
+            if html:
+                for i in results:
+                    table_values.append([i[0], i[1], i[5]])
+                document = '''<!DOCTYPE html><html>
+                                <head>
+                                <style>table, th, td{border:1px solid black; border-collapse: collapse};</style></head>
+                                <body>
+                                <h3>Balances</h3>
+                                <table style='width 100%'>
+                                <tr><th>ID</th><th>Account</th><th>Balance</th></tr>
+                                '''
+
+                for row in table_values:
+                    #row_format = "<tr><td>{}</td><td>{}</td><td>{}</td></tr>\n"
+                    row_format = "<tr><td>{}</td><td>{}</td>{}</tr>\n"
+                    #document += row_format.format(row[0], row[1], self.html_emph(row[2]))
+                    document += row_format.format(row[0], row[1], self.text_color(row[2], html=True))
+                document += "</table></body></html>"
+                f = open(html, 'w')
+                f.write(document)
+                f.close()
+                #print(document)
+            else:
+                for i in results:
+                    table_values.append([i[0], i[1], self.text_color(i[5])])
+                print(tabulate(table_values, ["ID", "Account", "Balance"], tablefmt="simple"))
+
+
+    def text_color(self,txt,html=False):
+        value = float(txt)
+        if value > 0:
+            color = "green"
+        elif value == 0:
+            color = "blue"
+        else:
+            color = "red"
+        if html==True:
+            return("<td style=color:{}>{}</td>".format(color,txt))
+        else:
+            return(colored(txt, color))
+
+    def html_emph(self,txt):
+        value = float(txt)
+        if value > 0:
+            fmt_string = "<b>{}</b>"
+        elif value == 0:
+            fmt_string = "{}"
+        else:
+            fmt_string = "<em>{}</em>"
+        return(fmt_string.format(txt))
+        
+    def activate_budget(self):
+        if self.budget_active:
+            print("Budget already active")
+            exit(4)
+        else:
+            balance = self.allocation_balance()
+            if balance != 0:
+                print("Envelope allocations do not balance income")
+                exit(1)
+            else:
+                sql = '''update budgets set active = 1
+                         where budget_id = ?'''
+                result = self.write_sql(sql, [self.budget_id])
+
+    def deactivate_budget(self):
+        current_id = self.budget_id
+        sql = '''update budgets set active = 0, closed = 1
+                 where budget_id = ?'''
+        result = self.write_sql(sql, [current_id])
+        if result == 0:
+            balances = self.envelope_balance()
+            self.month = self.next_month
+            self.year = self.next_year
+            status = self.open_budget()
+            if status == 3:
+                self.get_budget_id()
+            carry_list = []
+            for i in balances:
+                carry_list.append([self.budget_id,i[0],'C',i[5]])
+            sql = '''insert into corrections values (?,?,?,?)'''
+            results = self.write_sql(sql, carry_list, single=False)
+            if results == 0:
+                print("Budget Closed")
+                exit(0)
+            else:
+                print("Error")
+                exit(0)
+
+    def check_budget_status(self):
+        sql = '''select active,closed from budgets where budget_id = ?'''
+        result = self.read_sql(sql, [self.budget_id], single=True)
+        if result[0] == 1:
+            self.budget_active = True
+        elif result[0] == 0:
+            self.budget_active = False
+        if result[1] == 1:
+            self.budget_closed = True
+        else:
+            self.budget_closed = False
+
+    def copy_allocations(self, allocations="base", targets=True):
+        if allocations == "base":
+            alloc = "base_value"
+        elif allocations == "spend":
+            alloc = "spending"
+        #TODO include corrected budget as an option
+
+        if targets:
+            targ = ",target "
+        else:
+            targ = ""
+
+        sql = "select account_id," + alloc + targ + "from budget_base where budget_id = ?"
+        current_id = self.budget_id
+        self.month = self.last_month
+        self.year = self.last_year
+
+        self.get_budget_id()
+
+        results = self.read_sql(sql, [self.budget_id])
+
+        copy_list = []
+        if len(targ) > 0:
+            sql = '''update budget_base
+                     set base_value = ?,
+                         target = ?
+                     where budget_id = ?
+                     and account_id = ?'''
+            for i in results:
+                copy_list.append([i[1], i[2], current_id,i[0]])
+        else:
+            sql = '''update budget_base
+                     set base_value = ?
+                     where budget_id = ?
+                     and account_id = ?'''
+            for i in results:
+                copy_list.append([i[1], current_id,i[0]])
+
+        results = self.write_sql(sql,copy_list,single=False)
+        if results == 0:
+            return(0)
+        else:
+            return(6)
+
+
+def main():
+    db = "test.db"
+    beanfile = "test3.bean"
+    parser = argparse.ArgumentParser(description="Generate School Lesson Plans")
+    parser.add_argument("-m", action="store", dest="month", default=None, help="Set budget month")
+    parser.add_argument("-y", action="store", dest="year", default=None, help="Set budget year")
+    parser.add_argument("-e", action="store_true", dest="edit", default=False, help="Edit base budget allocations")
+    parser.add_argument("-a", action="store_true", dest="adjust", default=False, help="Adjust envelope balances")
+    parser.add_argument("-b", action="store_true", dest="budget_init", default=False, help="Initialise a new budget month")
+    parser.add_argument("-H", action="store", dest="html_dest", default=None,help="Save balances to html file")
+    parser.add_argument("-A", action="store_true", dest="activate", default=False, help="Activate a budget")
+    parser.add_argument("-D", action="store_true", dest="deactivate", default=False, help="Deactivate budget")
+    parser.add_argument("-c", action="store_true", dest="copy", default=False, help="Copy base budget values from last month")
+    parser.add_argument("-s", action="store_true", dest="single_correction", default=False,help="Apply a single account correction")
+    parser.add_argument("-t", action="store_true", dest="set_target", default=False,help="Set an account target value")
+
+    args = parser.parse_args()
+    #print(args)
+
+    if args.budget_init:
+        b = budget(db, beanfile,args.month,args.year,init=True)
+        exit()
+    else:
+        b = budget(db, beanfile,args.month,args.year)
+    
+        if args.activate:
+            b.activate_budget()
+
+        elif args.deactivate:
+            b.deactivate_budget()
+
+        # Adjustment envelopes
+        elif args.adjust:
+            print("\033[H\033[J")
+            b.return_balances()
+            print("\n")
+            print("Adjust Balances\n")
+            from_acct = input("Account to take from: ")
+            to_acct = input("Account to add to: ")
+            adjust_val = input("Amount to move: ")
+            result = b.redistribute_envelopes(int(from_acct), int(to_acct), float(adjust_val))
+            if result == 0:
+                print("\033[H\033[J")
+                print("Correction applied")
+                b.return_balances()
+
+        elif args.single_correction:
+            b.return_balances()
+            print("\n")
+            print("Single Account Adjustment\n")
+            acct = input("Account to Adjust: ")
+            if len(acct) == 0:
+                print("Cancelling...")
+                exit(0)
+            adjust_val = input("Adjustment Amount: ")
+            if len(adjust_val) == 0:
+                print("Cancelling...")
+                exit(0)
+            result = b.single_correction(acct,adjust_val)
+            if result == 0:
+                print("\033[H\033[J")
+                print("Correction applied")
+                b.return_balances()
+
+        elif args.set_target:
+            print("\033[H\033[J")
+            b.base_planner()
+            print("\n")
+            print("Set target value\n")
+            acct = input("Target Account: ")
+            if len(acct) == 0:
+                print("Cancelling...")
+                exit(0)
+            targ_val = input("Target Amount: ")
+            if len(targ_val) == 0:
+                print("Cancelling...")
+                exit(0)
+            result = b.set_target(acct,targ_val)
+            if result == 0:
+                print("\033[H\033[J")
+                print("Target set")
+                b.base_planner()
+
+        elif args.edit:
+            if b.budget_active:
+                print("Budget is already active")
+                exit(4)
+            elif b.budget_closed:
+                print("Budget is closed")
+                exit(5)
+            while True:
+                print("\033[H\033[J")
+                b.base_planner()
+                selected_acct = input("Account to budget: ")
+                if len(selected_acct) == 0:
+                    print("Cancelling...")
+                    exit(0)
+                budget_value = input("Amount to budget: ")
+                b.set_base_envelope(int(selected_acct), float(budget_value))
+
+        elif args.html_dest:
+            b.return_balances(html=args.html_dest)
+
+        elif args.copy:
+            alloc = input("Copy (b)ase values or (s)pending? [b]: ")
+            if alloc == "s":
+                allocations = "spend"
+            elif alloc == "b" or alloc == "":
+                allocation = "base"
+            else:
+                print("Invalid selection")
+                exit(7)
+            targ = input("Copy targets? [y]: ")
+            if targ == "n":
+                targets = False
+            elif targ == "y" or targ == "":
+                targets = True
+            else:
+                print("Invalid selection")
+                exit(7)
+            result = b.copy_allocations(allocation,targets)
+            if result == 0:
+                print("Base values updated")
+            else:
+                print("Error")
+
+        else:
+            b.return_balances()
 
 if __name__ == "__main__":
-    a = budget("test.db", "test3.bean",12)
-    a.open_budget()
-    a.get_bean_accounts()
-    a.insert_accounts()
-    print("Budget ID: ", a.budget_id)
-    a.get_bean_income()
-    a.load_income()
-    a.get_bean_accounts()
-    a.load_accounts()
-    a.close()
-
-
+    main()
