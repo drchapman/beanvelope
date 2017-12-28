@@ -173,21 +173,22 @@ class budget:
             results = self.write_sql(sql, [str(-1*int(entry.get_value())),self.budget_id])
 
     def load_accounts(self):
-        accounts = self.read_temp()
-        load_list = []
-        for row in accounts:
-            entry = position(row)
-            vals = (entry.get_value(), entry.get_account(),self.budget_id)
-            load_list.append(vals)
-        sql = '''update budget_base 
-                 set spending = ? 
-                 where account_id = (select account_id from accounts where account_name = ?)
-                 and budget_id = ?
-                 '''
-        account_write = self.write_sql(sql, load_list,single=False)
-        if account_write == "sql_failure":
-            print("Failed to update")
-            exit(1)
+        if self.budget_active:
+            accounts = self.read_temp()
+            load_list = []
+            for row in accounts:
+                entry = position(row)
+                vals = (entry.get_value(), entry.get_account(),self.budget_id)
+                load_list.append(vals)
+            sql = '''update budget_base 
+                     set spending = ? 
+                     where account_id = (select account_id from accounts where account_name = ?)
+                     and budget_id = ?
+                     '''
+            account_write = self.write_sql(sql, load_list,single=False)
+            if account_write == "sql_failure":
+                print("Failed to update")
+                exit(1)
 
 
 
@@ -203,6 +204,7 @@ class budget:
             exit(2)
         elif budget_id > 0:
             self.budget_id = budget_id
+            self.check_budget_status()
             self.get_bean_accounts()
             self.load_accounts()
             self.insert_accounts()
@@ -529,13 +531,29 @@ def main():
         b = budget(db, beanfile,args.month,args.year)
     
         if args.activate:
-            b.activate_budget()
+            if b.budget_closed:
+                print("Budget cannot be reactivated")
+                exit(11)
+            elif b.budget_active:
+                print("Budget already active")
+                exit(12)
+            else:
+                b.activate_budget()
 
         elif args.deactivate:
+            if b.budget_closed:
+                print("Budget already deactivated")
+                exit(13)
+            elif not b.budget_active:
+                print("Budget is not active")
+                exit(14)
             b.deactivate_budget()
 
         # Adjustment envelopes
         elif args.adjust:
+            if not b.budget_active:
+                print("Adjustments cannot be applied to inactive budgets")
+                exit(10)
             print("\033[H\033[J")
             b.return_balances()
             print("\n")
@@ -550,6 +568,10 @@ def main():
                 b.return_balances()
 
         elif args.single_correction:
+            if not b.budget_active:
+                print("Adjustments cannot be applied to inactive budgets")
+                exit(10)
+            print("\033[H\033[J")
             b.return_balances()
             print("\n")
             print("Single Account Adjustment\n")
@@ -568,6 +590,9 @@ def main():
                 b.return_balances()
 
         elif args.set_target:
+            if b.budget_closed:
+                print("Targets cannot be adjusted after budget closed")
+                exit(11)
             print("\033[H\033[J")
             b.base_planner()
             print("\n")
