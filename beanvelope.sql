@@ -20,7 +20,7 @@ create table accounts
 -- income table
 create table income
 	(budget_id integer primary key,
-	income number,
+	income integer,
 	foreign key(budget_id) references budgets(budget_id)
 );
 
@@ -28,9 +28,9 @@ create table income
 create table budget_base
 	(budget_id integer,
 	account_id integer,
-	base_value number default 0.00,
-	target number default 0.00,
-	spending number default 0.00,
+	base_value number default 0,
+	target integer default 0,
+	spending integer default 0,
 	constraint base_idx primary key (budget_id, account_id),
 	foreign key(budget_id) references budgets(budget_id),
 	foreign key(account_id) references accounts(account_id)
@@ -41,7 +41,7 @@ create table corrections
 	(budget_id integer,
 	account_id integer,
 	correction_type char,
-	correction_value number,
+	correction_value integer,
 	foreign key(budget_id) references budgets(budget_id),
 	foreign key(account_id) references accounts(account_id)
 );
