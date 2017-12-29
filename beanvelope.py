@@ -162,10 +162,10 @@ class budget:
         income = self.read_temp()
         entry = position(income[0])
         sql = '''insert into income values (?, ?)'''
-        results = self.write_sql(sql, [self.budget_id, str(-1*int(entry.get_value()))])
+        results = self.write_sql(sql, [self.budget_id, str(-1*float(entry.get_value()))])
         if results == "constraint_violation":
             sql = '''update income set income = ? where budget_id = ?'''
-            results = self.write_sql(sql, [str(-1*int(entry.get_value())),self.budget_id])
+            results = self.write_sql(sql, [str(-1*float(entry.get_value())),self.budget_id])
 
     def load_accounts(self):
         if self.budget_active:
