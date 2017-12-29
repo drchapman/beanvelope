@@ -508,7 +508,7 @@ def main():
     beanfile = os.path.expandvars(config.get("DEFAULT", "beanfile"))
     tempfile = os.path.expandvars(config.get("DEFAULT", "tempfile"))
 
-    parser = argparse.ArgumentParser(description="Generate School Lesson Plans")
+    parser = argparse.ArgumentParser(description="Manage budgets based on beancount file data")
     parser.add_argument("-m", action="store", dest="month", default=None, help="Set budget month")
     parser.add_argument("-y", action="store", dest="year", default=None, help="Set budget year")
     parser.add_argument("-e", action="store_true", dest="edit", default=False, help="Edit base budget allocations")
