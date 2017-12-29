@@ -7,6 +7,9 @@ import argparse
 import subprocess
 from tabulate import tabulate
 from termcolor import colored
+from configparser import ConfigParser
+
+config_file = os.path.expandvars("$HOME/.config/beanvelope/beanvelope.conf")
 
 class position:
     def __init__(self, line):
@@ -20,7 +23,7 @@ class position:
         return(self.value)
 
 class budget:
-    def __init__(self, db, beanfile, month=None, year=None,init=False):
+    def __init__(self, db, beanfile, tempfile, month=None, year=None,init=False):
         self.beanfile = beanfile
         today = datetime.date.today()
         if month == None:
@@ -46,12 +49,9 @@ class budget:
             self.next_year = self.year
             self.last_month = int(self.month) - 1
             self.last_year = self.year 
-        #print("This month:", self.month)
-        #print("Last month:", self.last_month)
-        #print("Next month:", self.next_month)
         self.connect(db)
         self.bq = "bean-query"
-        self.tempfile = 'beanvelope.tmp'
+        self.tempfile = tempfile
         if init:
             self.open_budget()
         else:
@@ -65,7 +65,7 @@ class budget:
 
 
     def connect(self,db):
-        # Open a connection to the beanvelope (sqlite) database 
+        '''Open a connection to the beanvelope (sqlite) database'''
         self.dbobject = sqlite3.connect(db)
         self.curs = self.dbobject.cursor()
 
@@ -91,15 +91,11 @@ class budget:
         '''Create a tempfile containing the current list of accounts from beancount'''
         #query = "balances from month = {} and year = {} where account ~ 'Expenses' or (account ~ 'Liabilities' and not 'Expenses:Interest' in other_accounts) order by account".format(self.month, self.year)
         query = "select account,sum(position) from month = {} and year = {} where account ~ 'Expenses' or (account ~ 'Liabilities' and not 'Expenses:Interest' in other_accounts) group by account order by account".format(self.month, self.year)
-        #print(query)
-        #exit()
         self.run_beancount(query)
 
     def get_bean_income(self):
         '''Create a tempfile containing the available income from beancount'''
         query = "select 'Income',sum(position) from month = {} and year = {}  where account ~ 'Income' and not 'Exclude' in tags group by 'Income'".format(self.last_month, self.last_year)
-        #print(query)
-        #exit()
         self.run_beancount(query)
 
     def write_sql(self, sql, params, get_id=False,single=True,debug=False):
@@ -161,7 +157,6 @@ class budget:
             else:
                 sql = '''insert into corrections values (?,?,?,?)'''
                 corr = self.write_sql(sql, [self.budget_id,results,'C',0])
-        #        return(0)
 
     def load_income(self):
         income = self.read_temp()
@@ -221,7 +216,6 @@ class budget:
         sql = '''select budget_id from budgets where year = ? and month = ?'''
         budget_id = self.read_sql(sql,[str(self.year),str(self.month)],single=True)
         if budget_id == None:
-            #self.open_budget()
             print("No budget for this month")
             exit(1)
         else:
@@ -320,8 +314,7 @@ class budget:
                  order by account_name'''
 
         results = self.read_sql(sql, [self.budget_id, 'C'])#,debug=True)
-        #print(results)
-        #exit()
+
         if results != "sql_failure":
             table_values = []
             for i in results:
@@ -343,7 +336,8 @@ class budget:
         sql = '''
                 select a.account_id, a.account_name, 
                     b.base_value, c.total_correction, b.spending,
-                    (b.base_value + c.total_correction - b.spending) as envelope_balance
+                    (b.base_value + c.total_correction - b.spending) as envelope_balance,
+                    b.target
                 from accounts a, budget_base b, correction_temp c
                 where a.account_id = b.account_id
                 and b.account_id = c.account_id
@@ -355,36 +349,36 @@ class budget:
 
     def return_balances(self,html=False):
         results = self.envelope_balance()
+        t = lambda x: " " if x == 0 else x
+
         if results != "sql_failure":
             table_values = []
-            #for i in results:
-            #    table_values.append([i[0], i[1], self.text_color(i[5])])
             if html:
                 for i in results:
-                    table_values.append([i[0], i[1], i[5]])
+                    table_values.append([i[0], i[1],t(i[6]),i[4],i[5]])
                 document = '''<!DOCTYPE html><html>
                                 <head>
                                 <style>table, th, td{border:1px solid black; border-collapse: collapse};</style></head>
                                 <body>
                                 <h3>Balances</h3>
                                 <table style='width 100%'>
-                                <tr><th>ID</th><th>Account</th><th>Balance</th></tr>
+                                <tr><th>ID</th><th>Account</th><th>Target</th><th>Spend</th><th>Balance</th></tr>
                                 '''
 
                 for row in table_values:
                     #row_format = "<tr><td>{}</td><td>{}</td><td>{}</td></tr>\n"
-                    row_format = "<tr><td>{}</td><td>{}</td>{}</tr>\n"
+                    row_format = "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>{}</tr>\n"
                     #document += row_format.format(row[0], row[1], self.html_emph(row[2]))
-                    document += row_format.format(row[0], row[1], self.text_color(row[2], html=True))
+                    document += row_format.format(row[0], row[1], row[2],row[3],self.text_color(row[4], html=True))
                 document += "</table></body></html>"
                 f = open(html, 'w')
                 f.write(document)
                 f.close()
-                #print(document)
+
             else:
                 for i in results:
-                    table_values.append([i[0], i[1], self.text_color(i[5])])
-                print(tabulate(table_values, ["ID", "Account", "Balance"], tablefmt="simple"))
+                    table_values.append([i[0], i[1], t(i[6]),i[4],self.text_color(i[5])])
+                print(tabulate(table_values, ["ID", "Account","Target", "Spend","Balance"], tablefmt="simple"))
 
 
     def text_color(self,txt,html=False):
@@ -465,6 +459,7 @@ class budget:
             alloc = "base_value"
         elif allocations == "spend":
             alloc = "spending"
+
         #TODO include corrected budget as an option
 
         if targets:
@@ -506,8 +501,13 @@ class budget:
 
 
 def main():
-    db = "test.db"
-    beanfile = "test3.bean"
+    config = ConfigParser()
+    config.read(config_file)
+
+    db = os.path.expandvars(config.get("DEFAULT", "db"))
+    beanfile = os.path.expandvars(config.get("DEFAULT", "beanfile"))
+    tempfile = os.path.expandvars(config.get("DEFAULT", "tempfile"))
+
     parser = argparse.ArgumentParser(description="Generate School Lesson Plans")
     parser.add_argument("-m", action="store", dest="month", default=None, help="Set budget month")
     parser.add_argument("-y", action="store", dest="year", default=None, help="Set budget year")
@@ -522,13 +522,12 @@ def main():
     parser.add_argument("-t", action="store_true", dest="set_target", default=False,help="Set an account target value")
 
     args = parser.parse_args()
-    #print(args)
 
     if args.budget_init:
-        b = budget(db, beanfile,args.month,args.year,init=True)
+        b = budget(db, beanfile,tempfile,args.month,args.year,init=True)
         exit()
     else:
-        b = budget(db, beanfile,args.month,args.year)
+        b = budget(db, beanfile,tempfile,args.month,args.year)
     
         if args.activate:
             if b.budget_closed:
@@ -559,8 +558,17 @@ def main():
             print("\n")
             print("Adjust Balances\n")
             from_acct = input("Account to take from: ")
+            if len(from_acct) == 0:
+                print("Cancelling...")
+                exit(0)
             to_acct = input("Account to add to: ")
+            if len(to_acct) == 0:
+                print("Cancelling...")
+                exit(0)
             adjust_val = input("Amount to move: ")
+            if len(adjust_val) == 0:
+                print("Cancelling...")
+                exit(0)
             result = b.redistribute_envelopes(int(from_acct), int(to_acct), float(adjust_val))
             if result == 0:
                 print("\033[H\033[J")
@@ -655,7 +663,12 @@ def main():
                 print("Error")
 
         else:
-            b.return_balances()
+            print("\033[H\033[J")
+            if (not b.budget_active) and (not b.budget_closed):
+                b.base_planner()
+            else:
+                b.return_balances()
+            print("\n")
 
 if __name__ == "__main__":
     main()
