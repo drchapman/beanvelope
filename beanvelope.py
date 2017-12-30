@@ -5,11 +5,41 @@ import os
 import datetime
 import argparse
 import subprocess
+import re
 from tabulate import tabulate
 from termcolor import colored
 from configparser import ConfigParser
 
 config_file = os.path.expandvars("$HOME/.config/beanvelope/beanvelope.conf")
+
+def db_in(value):
+    a=str(value)
+    r1 = re.compile('-?[0-9]+\.[0-9]{2}')
+    r2 = re.compile('-?[0-9]+\.[0-9]{1}')
+    r3 = re.compile('-?[0-9]+')
+    s1 = re.compile('\.')
+    if r1.match(a):
+        result = int(s1.sub('',a))
+    elif r2.match(a):
+        result = 10*int(s1.sub('',a))
+    elif r3.match(a):
+        result = 100*int(a)
+    else:
+        print("Conversion failure")
+        print("Entered:",value)
+        exit(20)
+    return(result)
+
+
+def db_out(value):
+    v = str(value)
+    if len(v) == 1:
+        result = "0.0"+v
+    elif len(v) == 2:
+        result = "0."+v
+    else:
+        result = v[0:-2] + '.' + v[-2:]
+    return(result)
 
 class position:
     def __init__(self, line):
@@ -161,11 +191,13 @@ class budget:
     def load_income(self):
         income = self.read_temp()
         entry = position(income[0])
+        
         sql = '''insert into income values (?, ?)'''
-        results = self.write_sql(sql, [self.budget_id, str(-1*float(entry.get_value()))])
+        #results = self.write_sql(sql, [self.budget_id, str(-100*float(entry.get_value()))])
+        results = self.write_sql(sql, [self.budget_id, -1*db_in(entry.get_value())])
         if results == "constraint_violation":
             sql = '''update income set income = ? where budget_id = ?'''
-            results = self.write_sql(sql, [str(-1*float(entry.get_value())),self.budget_id])
+            results = self.write_sql(sql, [str(-100*float(entry.get_value())),self.budget_id])
 
     def load_accounts(self):
         if self.budget_active:
@@ -173,7 +205,7 @@ class budget:
             load_list = []
             for row in accounts:
                 entry = position(row)
-                vals = (entry.get_value(), entry.get_account(),self.budget_id)
+                vals = (db_in(entry.get_value()), entry.get_account(),self.budget_id)
                 load_list.append(vals)
             sql = '''update budget_base 
                      set spending = ? 
@@ -207,7 +239,7 @@ class budget:
 
     def create_budget_envelopes(self):
         sql = '''insert into budget_base 
-                select ?, account_id, 0.00, 0.00, 0.00 from accounts'''
+                select ?, account_id, 0, 0, 0 from accounts'''
         results = self.write_sql(sql, [self.budget_id])
         
          
@@ -232,7 +264,7 @@ class budget:
                 set base_value = ?
                 where budget_id = ?
                 and account_id = ?'''
-        results = self.write_sql(sql, [value, self.budget_id, acct_id])
+        results = self.write_sql(sql, [db_in(value), self.budget_id, acct_id])
         if results == 0:
             return(0)
 
@@ -241,8 +273,8 @@ class budget:
                  set base_value = base_value + ?
                  where budget_id = ?
                  and account_id = ?'''
-        env1 = (-transfer, self.budget_id,acc1)
-        env2 = (transfer, self.budget_id,acc2)
+        env1 = (-1*db_in(transfer), self.budget_id,acc1)
+        env2 = (db_in(transfer), self.budget_id,acc2)
         results = self.write_sql(sql, [env1,env2],single=False)
         if results == 0:
             return(0)
@@ -259,7 +291,7 @@ class budget:
     def single_correction(self,acct_id,amount):
         sql = '''insert into corrections
                  values (?,?,?,?)'''
-        vals = [self.budget_id,acct_id,'S',amount]
+        vals = [self.budget_id,acct_id,'S',db_in(amount)]
         results = self.write_sql(sql, vals)
         if results == 0:
             return(0)
@@ -271,7 +303,7 @@ class budget:
                  set target = ?
                  where budget_id = ?
                  and account_id = ?'''
-        results = self.write_sql(sql,[targ_val,self.budget_id,acct])
+        results = self.write_sql(sql,[db_in(targ_val),self.budget_id,acct])
         if results == 0:
             return(0)
         else:
@@ -293,12 +325,12 @@ class budget:
         return(results[0])
 
     def base_planner(self):
-        balance = self.allocation_balance()
+        balance = db_out(self.allocation_balance())
 
         header = '''Income:  {}\nBalance: {}
 
                     '''
-        print(header.format(self.income, self.text_color(balance)))
+        print(header.format(db_out(self.income), self.text_color(balance)))
 
         sql = '''select a.account_id, 
                         a.account_name, 
@@ -318,7 +350,7 @@ class budget:
         if results != "sql_failure":
             table_values = []
             for i in results:
-                table_values.append([i[0], i[1], i[2], i[3], self.text_color(i[4])])
+                table_values.append([i[0], i[1], db_out(i[2]), db_out(i[3]), self.text_color(db_out(i[4]))])
             print(tabulate(table_values, ["ID", "Account", "Target", "Carried", "Allocated"], tablefmt="simple"))
 
 
@@ -349,7 +381,7 @@ class budget:
 
     def return_balances(self,html=False):
         results = self.envelope_balance()
-        t = lambda x: " " if x == 0 else x
+        t = lambda x: " " if x == 0 else db_out(x)
 
         if results != "sql_failure":
             table_values = []
@@ -369,7 +401,7 @@ class budget:
                     #row_format = "<tr><td>{}</td><td>{}</td><td>{}</td></tr>\n"
                     row_format = "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td>{}</tr>\n"
                     #document += row_format.format(row[0], row[1], self.html_emph(row[2]))
-                    document += row_format.format(row[0], row[1], row[2],row[3],self.text_color(row[4], html=True))
+                    document += row_format.format(row[0], row[1], t(row[2]),db_out(row[3]),self.text_color(db_out(row[4]), html=True))
                 document += "</table></body></html>"
                 f = open(html, 'w')
                 f.write(document)
@@ -377,7 +409,7 @@ class budget:
 
             else:
                 for i in results:
-                    table_values.append([i[0], i[1], t(i[6]),i[4],self.text_color(i[5])])
+                    table_values.append([i[0], i[1], t(i[6]),db_out(i[4]),self.text_color(db_out(i[5]))])
                 print(tabulate(table_values, ["ID", "Account","Target", "Spend","Balance"], tablefmt="simple"))
 
 
@@ -633,8 +665,11 @@ def main():
                 if len(selected_acct) == 0:
                     print("Cancelling...")
                     exit(0)
-                budget_value = input("Amount to budget: ")
-                b.set_base_envelope(int(selected_acct), float(budget_value))
+                budget_value = input("Allocated amount: ")
+                if len(budget_value) == 0:
+                    print("Cancelling...")
+                    exit(0)
+                b.set_base_envelope(int(selected_acct), budget_value)
 
         elif args.html_dest:
             b.return_balances(html=args.html_dest)
@@ -642,7 +677,7 @@ def main():
         elif args.copy:
             alloc = input("Copy (b)ase values or (s)pending? [b]: ")
             if alloc == "s":
-                allocations = "spend"
+                allocation = "spend"
             elif alloc == "b" or alloc == "":
                 allocation = "base"
             else:
