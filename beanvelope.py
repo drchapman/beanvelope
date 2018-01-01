@@ -33,12 +33,19 @@ def db_in(value):
 
 def db_out(value):
     v = str(value)
+    if v[0] == "-":
+        negative = True
+        v=v[1:]
+    else:
+        negative = False
     if len(v) == 1:
         result = "0.0"+v
     elif len(v) == 2:
         result = "0."+v
     else:
         result = v[0:-2] + '.' + v[-2:]
+    if negative:
+        result = "-" + result
     return(result)
 
 class position:
