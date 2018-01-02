@@ -99,6 +99,8 @@ class budget:
             self.get_income()
             self.get_bean_accounts()
             self.load_accounts()
+            self.insert_accounts()
+            self.update_missing()
 
 
     def connect(self,db):
@@ -194,6 +196,35 @@ class budget:
             else:
                 sql = '''insert into corrections values (?,?,?,?)'''
                 corr = self.write_sql(sql, [self.budget_id,results,'C',0])
+
+    def update_missing(self):
+        '''Update a budget to include new expense accounts'''
+        accounts = self.read_temp()
+        # Generate temp table of this month's accounts
+        sql = '''create temporary table budget_temp as
+                    select budget_id, account_id
+                    from budget_base
+                    where budget_id = ?'''
+        b_tmp = self.write_sql(sql, [self.budget_id])
+
+        # Look for account
+        sql = '''create temporary table accounts_temp as 
+                    select a.account_id, b.budget_id 
+                    from accounts a left outer join budget_temp b 
+                    on a.account_id = b.account_id
+                    where a.closed = 0'''
+        tmp_write = self.write_sql(sql, [])
+        sql = '''select account_id from accounts_temp
+                 where budget_id is null'''
+        tmp_read = self.read_sql(sql, [], single=False)
+        val_list = []
+        for i in tmp_read:
+            val_list.append((self.budget_id, i[0]))
+        #print(val_list)
+        sql = '''insert into budget_base values (?,?,0,0,0)'''
+        results = self.write_sql(sql, val_list, single = False)
+        sql = '''insert into corrections values (?,?,'C',0)'''
+        results = self.write_sql(sql, val_list, single = False)
 
     def load_income(self):
         income = self.read_temp()
@@ -559,6 +590,7 @@ def main():
     parser.add_argument("-c", action="store_true", dest="copy", default=False, help="Copy base budget values from last month")
     parser.add_argument("-s", action="store_true", dest="single_correction", default=False,help="Apply a single account correction")
     parser.add_argument("-t", action="store_true", dest="set_target", default=False,help="Set an account target value")
+    #parser.add_argument("-u", action="store_true", dest="update", default=False,help="Update budget with new expense accounts (NOT IMPLEMENTED)")
 
     args = parser.parse_args()
 
@@ -704,6 +736,10 @@ def main():
             else:
                 print("Error")
 
+        #elif args.update:
+        #    b.update_missing()
+
+            
         else:
             print("\033[H\033[J")
             if (not b.budget_active) and (not b.budget_closed):
